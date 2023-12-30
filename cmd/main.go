@@ -8,17 +8,17 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/kzg"
+	"github.com/consensys/gnark-crypto/ecc/bn254/kzg"
 	"github.com/consensys/gnark-ignition-verifier/ignition"
 )
 
-const startIdx = 175
+const startIdx = 174
 
 func main() {
 
 	// Example usage of the ignition package
 	config := ignition.Config{
-		BaseURL:  "https://aztec-ignition.s3.eu-west-2.amazonaws.com/",
+		BaseURL:  "https://aztec-ignition.s3.amazonaws.com/",
 		Ceremony: "MAIN+IGNITION", // "MAIN IGNITION"
 		CacheDir: "./data",
 	}
@@ -33,33 +33,35 @@ func main() {
 		log.Fatal("when fetching manifest: ", err)
 	}
 	// sanity check
-	//if len(manifest.Participants) <= startIdx+1 {
-	//	log.Fatal("not enough participants")
-	//}
+	if len(manifest.Participants) <= startIdx+1 {
+		log.Fatal("not enough participants")
+	}
 	// p := profile.Start(profile.MemProfile, profile.ProfilePath("."), profile.NoShutdownHook)
 	// 2. we read two contributions at a time, and check that the second one follows the first one
-	_, next := ignition.NewContribution(manifest.NumG1Points), ignition.NewContribution(manifest.NumG1Points)
-	config.CacheDir = "" // temporary hack to avoid downloading all files.
-	//log.Printf("processing contributions %d and %d", startIdx, startIdx+1)
-	//if err := current.Get(manifest.Participants[startIdx], config); err != nil {
-	//	log.Fatal("when fetching contribution: ", err)
-	//}
-	if err := next.Get(manifest.Participants[startIdx], config); err != nil {
+	current, next := ignition.NewContribution(manifest.NumG1Points), ignition.NewContribution(manifest.NumG1Points)
+
+	//config.CacheDir = "" // temporary hack to avoid downloading all files.
+
+	log.Printf("processing contributions %d and %d", startIdx, startIdx+1)
+	if err := current.Get(manifest.Participants[startIdx], config); err != nil {
 		log.Fatal("when fetching contribution: ", err)
 	}
-	//if !next.Follows(&current) {
-	//	log.Fatalf("contribution %d does not follow contribution %d", startIdx+1, startIdx)
-	//}
-	//for i := startIdx + 2; i < len(manifest.Participants); i++ {
-	//	log.Println("processing contribution ", i+1)
-	//	current, next = next, current
-	//	if err := next.Get(manifest.Participants[i], config); err != nil {
-	//		log.Fatal("when fetching contribution ", i+1, ": ", err)
-	//	}
-	//	if !next.Follows(&current) {
-	//		log.Fatal("contribution ", i+1, " does not follow contribution ", i, ": ", err)
-	//	}
-	//}
+	if err := next.Get(manifest.Participants[startIdx+1], config); err != nil {
+		log.Fatal("when fetching contribution: ", err)
+	}
+	if !next.Follows(&current) {
+		log.Fatalf("contribution %d does not follow contribution %d", startIdx+1, startIdx)
+	}
+	for i := startIdx + 2; i < len(manifest.Participants); i++ {
+		log.Println("processing contribution ", i+1)
+		current, next = next, current
+		if err := next.Get(manifest.Participants[i], config); err != nil {
+			log.Fatal("when fetching contribution ", i+1, ": ", err)
+		}
+		if !next.Follows(&current) {
+			log.Fatal("contribution ", i+1, " does not follow contribution ", i, ": ", err)
+		}
+	}
 	// p.Stop()
 
 	log.Println("success ✅: all contributions are valid")
@@ -77,6 +79,9 @@ func main() {
 			},
 		},
 	}
+
+	srs.Vk.Lines[0] = bn254.PrecomputeLines(srs.Vk.G2[0])
+	srs.Vk.Lines[1] = bn254.PrecomputeLines(srs.Vk.G2[1])
 
 	// sanity check
 	sanityCheck(&srs)
