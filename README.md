@@ -3,6 +3,7 @@
 1. Aztec ceremory的文件可以在S3 explorer(https://aztec-ignition.s3.eu-west-2.amazonaws.com/index.html)看到.
 2. Aztec 的G1点个数为1亿个(100M)，大约小于为2^27(2^27=128M)
 3. startIdx 越小，参与SRS生成的贡献者就越多，安全性越高，但每一个参与者需要大约6G的存储空间。
+4. 生成的SRS 大约为3G
 
 ### 配置
 ```
