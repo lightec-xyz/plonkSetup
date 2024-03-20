@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -13,6 +16,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	kzg_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/kzg"
+
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -94,6 +99,152 @@ func (c *Contribution) Get(participant Participant, config Config) error {
 	if !c.IsValid() {
 		return errors.New("invalid point(s): the contribution is not valid")
 	}
+	return nil
+}
+
+// Get the sealed contribution from remote or cache
+func (c *Contribution) GetSealed(config Config) error {
+	// read all transcripts
+	totalTranscripts := math.MaxInt
+	for i := 0; i < totalTranscripts; i++ {
+		file := fmt.Sprintf("transcript%02d.dat", i)
+
+		b, err := readOrDownload(config.ceremonyURL(), file, config)
+		if err != nil {
+			return err
+		}
+
+		// read the actual points from the bytes
+		tManifest := newTranscriptManifest(b)
+		totalTranscripts = int(tManifest.TotalTranscripts)
+		if totalTranscripts > 20 {
+			return errors.New("too many transcripts, that's suspicious")
+		}
+
+		// read G1 points
+		offset := 28
+		readG1Points(b[offset:], tManifest.NumG1Points, c.G1[tManifest.StartFrom:tManifest.StartFrom+tManifest.NumG1Points])
+		offset += int(tManifest.NumG1Points) * bn254.SizeOfG1AffineUncompressed
+
+		// read G2 point
+		if i == 0 {
+			readG2Points(b[offset:], &c.G2)
+			if !c.G2[0].IsInSubGroup() || !c.G2[1].IsInSubGroup() {
+				return errors.New("invalid G2 point: not in subgroup")
+			}
+			offset += bn254.SizeOfG2AffineUncompressed * 2
+		}
+
+		// The 'checksum' - a BLAKE2B hash of the rest of the file's data
+		checksum := blake2b.Sum512(b[:offset])
+		if !bytes.Equal(b[offset:offset+64], checksum[:]) {
+			return errors.New("invalid checksum")
+		}
+	}
+	log.Println("success ✅: all transcript are downloaded")
+	var nbErrs uint64
+	execute(len(c.G1), func(start, end int) {
+		for i := start; i < end; i++ {
+			// to montgomery form
+			c.G1[i].X.Mul(&c.G1[i].X, &rSquare)
+			c.G1[i].Y.Mul(&c.G1[i].Y, &rSquare)
+
+			// check if the point is on the curve
+			if !c.G1[i].IsInSubGroup() {
+				atomic.AddUint64(&nbErrs, 1)
+				return
+			}
+		}
+	})
+	if nbErrs > 0 {
+		return errors.New("invalid point(s): some points are not on the curve or in the correct subgroup")
+	}
+	if !c.IsValid() {
+		return errors.New("invalid point(s): the contribution is not valid")
+	}
+	log.Println("success ✅: change the G1 points to montgomery form")
+	return nil
+}
+
+func (c *Contribution) SanityCheck() error {
+	// we use the last contribution to build a kzg SRS for bn254
+	srs := kzg_bn254.SRS{
+		Pk: kzg_bn254.ProvingKey{
+			G1: c.G1,
+		},
+		Vk: kzg_bn254.VerifyingKey{
+			G1: c.G1[0],
+			G2: [2]bn254.G2Affine{
+				g2gen,
+				c.G2[0],
+			},
+		},
+	}
+
+	// sanity check
+	sanityCheck(&srs)
+	log.Println("success ✅: kzg sanity check with SRS")
+	return nil
+}
+
+func (c *Contribution) Split(config Config, pow2Index int) error {
+	if pow2Index < 0 || (1<<pow2Index) >= len(c.G1) {
+		return errors.New("invalid pow2 index")
+	}
+
+	srs := kzg_bn254.SRS{
+		Pk: kzg_bn254.ProvingKey{
+			G1: c.G1,
+		},
+		Vk: kzg_bn254.VerifyingKey{
+			G1: c.G1[0],
+			G2: [2]bn254.G2Affine{
+				g2gen,
+				c.G2[0],
+			},
+		},
+	}
+
+	srsFile := filepath.Join(config.SrsDir, fmt.Sprintf("bn254_pow_%v.srs", pow2Index))
+	lagrangeSrsFile := filepath.Join(config.SrsDir, fmt.Sprintf("bn254_pow_%v.lsrs", pow2Index))
+	lagrangeSize := 1 << uint(pow2Index)
+	g1sLagrange, err := kzg_bn254.ToLagrangeG1(c.G1[:lagrangeSize])
+	if err != nil {
+		return err
+	}
+
+	trimmedSrs := kzg_bn254.SRS{
+		Pk: kzg_bn254.ProvingKey{c.G1[:lagrangeSize+3]},
+		Vk: srs.Vk,
+	}
+
+	trimmedSrsLagrange := kzg_bn254.SRS{
+		Pk: kzg_bn254.ProvingKey{g1sLagrange},
+		Vk: srs.Vk,
+	}
+
+	fsrs, err := os.Create(srsFile)
+	if err != nil {
+		return err
+	}
+	defer fsrs.Close()
+
+	_, err = trimmedSrs.WriteTo(fsrs)
+	if err != nil {
+		return err
+	}
+
+	flsrs, err := os.Create(lagrangeSrsFile)
+	if err != nil {
+		return err
+	}
+	defer flsrs.Close()
+
+	_, err = trimmedSrsLagrange.WriteTo(flsrs)
+	if err != nil {
+		return err
+	}
+	log.Printf("success ✅: split the bn254_pow_%v.srs", pow2Index)
 	return nil
 }
 
@@ -199,6 +350,58 @@ func execute(nbIterations int, work func(int, int), maxCpus ...int) {
 	}
 
 	wg.Wait()
+}
+
+func sanityCheck(srs *kzg_bn254.SRS) {
+	// we can now use the SRS to verify a proof
+	// create a polynomial
+	f := randomPolynomial(60)
+
+	// commit the polynomial
+	digest, err := kzg_bn254.Commit(f, srs.Pk)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// compute opening proof at a random point
+	var point fr.Element
+	point.SetString("4321")
+	proof, err := kzg_bn254.Open(f, point, srs.Pk)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// verify the claimed valued
+	expected := eval(f, point)
+	if !proof.ClaimedValue.Equal(&expected) {
+		log.Fatal("inconsistent claimed value")
+	}
+
+	// verify correct proof
+	err = kzg_bn254.Verify(&digest, &proof, point, srs.Vk)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func randomPolynomial(size int) []fr.Element {
+	f := make([]fr.Element, size)
+	for i := 0; i < size; i++ {
+		f[i].SetRandom()
+	}
+	return f
+}
+
+// eval returns p(point) where p is interpreted as a polynomial
+// ∑_{i<len(p)}p[i]Xⁱ
+func eval(p []fr.Element, point fr.Element) fr.Element {
+	var res fr.Element
+	n := len(p)
+	res.Set(&p[n-1])
+	for i := n - 2; i >= 0; i-- {
+		res.Mul(&res, &point).Add(&res, &p[i])
+	}
+	return res
 }
 
 var g2gen bn254.G2Affine

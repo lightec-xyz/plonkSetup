@@ -11,7 +11,6 @@ package ignition
 
 import (
 	"net/url"
-	"path/filepath"
 )
 
 // Config specify from where to download the data and where to store it
@@ -19,6 +18,7 @@ type Config struct {
 	BaseURL  string // "https://aztec-ignition.s3.amazonaws.com/"
 	Ceremony string // TINY_TEST_7
 	CacheDir string // if empty, files are not cached. Otherwise, they are stored in this directory
+	SrsDir   string
 }
 
 func (c *Config) ceremonyURL() string {
@@ -30,5 +30,9 @@ func (c *Config) ceremonyURL() string {
 }
 
 func (c *Config) cache() string {
-	return filepath.Join(c.CacheDir, c.Ceremony)
+	return c.CacheDir
+}
+
+func (c *Config) srsDir() string {
+	return c.SrsDir
 }

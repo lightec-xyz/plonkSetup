@@ -10,7 +10,11 @@
 *.dat
 *.sig
 
-# Test binary, built with `go test -c`
+*.srs
+*.lsrs
+*.dat
+
+# Test binary, built with `go test_srs -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
