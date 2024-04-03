@@ -25,3 +25,5 @@
 
 # Go workspace file
 go.work
+go.sum
+cmd/split_srs/split_srs
