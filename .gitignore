@@ -27,3 +27,4 @@
 go.work
 go.sum
 cmd/split_srs/split_srs
+.DS_Store
